@@ -1,0 +1,155 @@
+name: Frontend Security Scan - SonarCloud, Snyk, Trivy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  APP_DIR: frontend
+  IMAGE_NAME: devops-frontend
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  frontend-security-scan:
+    name: Scan Frontend Source, Dependencies, Dockerfile and Image
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 3. Install frontend dependencies
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # 4. Run frontend build
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      # 5. SonarCloud scan
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # 6. Setup Snyk CLI
+      - name: Setup Snyk
+        uses: snyk/actions/setup@master
+
+      # 7. Snyk dependency scan
+      - name: Snyk Open Source Dependency Scan
+        continue-on-error: true
+        working-directory: frontend
+        run: snyk test --file=package.json --sarif-file-output=../snyk-open-source.sarif
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      # 8. Upload Snyk dependency SARIF
+      - name: Upload Snyk Dependency Report
+        if: always() && hashFiles('snyk-open-source.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-open-source.sarif
+          category: snyk-open-source
+
+      # 9. Snyk Code scan
+      - name: Snyk Code Scan
+        continue-on-error: true
+        working-directory: frontend
+        run: snyk code test --sarif-file-output=../snyk-code.sarif
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      # 10. Upload Snyk Code SARIF
+      - name: Upload Snyk Code Report
+        if: always() && hashFiles('snyk-code.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-code
+
+      # 11. Trivy filesystem scan for frontend folder
+      - name: Trivy Filesystem Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: frontend
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      # 12. Upload Trivy filesystem SARIF
+      - name: Upload Trivy Filesystem Report
+        if: always() && hashFiles('trivy-fs.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-filesystem
+
+      # 13. Trivy Dockerfile/config scan
+      - name: Trivy Dockerfile Config Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: frontend
+          format: sarif
+          output: trivy-config.sarif
+          severity: HIGH,CRITICAL
+
+      # 14. Upload Trivy config SARIF
+      - name: Upload Trivy Config Report
+        if: always() && hashFiles('trivy-config.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+      # 15. Build Docker image from frontend folder
+      - name: Build Docker image
+        run: docker build -t $IMAGE_NAME:$IMAGE_TAG ./frontend
+
+      # 16. Trivy Docker image scan
+      - name: Trivy Docker Image Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      # 17. Upload Trivy image SARIF
+      - name: Upload Trivy Image Report
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      # 18. Upload all scan reports as artifacts
+      - name: Upload all scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-security-scan-reports
+          path: |
+            *.sarif
