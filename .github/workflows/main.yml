@@ -14,7 +14,7 @@ env:
   IMAGE_NAME: devops-frontend
   IMAGE_TAG: ${{ github.sha }}
   AWS_REGION: ap-south-1
-  ECR_REPOSITORY: devops-frontend
+  ECR_REPOSITORY: devops/dso-project
 
 jobs:
   frontend-security-scan:
